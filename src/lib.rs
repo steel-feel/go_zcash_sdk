@@ -1,4 +1,172 @@
+use age::{Recipient, secrecy::ExposeSecret};
+use bip0039::{Count, English, Mnemonic};
+use rust_decimal::prelude::ToPrimitive;
+use secrecy::{ExposeSecret as _, SecretString, SecretVec, Zeroize};
+use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
+use tonic::transport::Channel;
+
+use zcash_client_backend::{
+    data_api::{AccountBirthday, WalletWrite},
+    proto::service::{self, compact_tx_streamer_client::CompactTxStreamerClient},
+};
+use zcash_protocol::consensus::{self, BlockHeight, Parameters};
+
+// use crate::{config::WalletConfig, remote::Servers};
+
+mod config;
+mod data;
+mod error;
+mod remote;
+
+// mod config;
+// mod remote;
+// mod data;
+// mod error;
+
+// use crate::{
+//     config::WalletConfig,
+//     //data::{init_dbs, Network},
+//     // error,
+//     remote::{tor_client, Servers},
+// };
+
+pub async fn create_wallet() -> Result<(), anyhow::Error> {
+    let wallet_dir = Some(String::from("./something/"));
+    let network = consensus::Network::MainNetwork;
+    let params = consensus::Network::from(network);
+
+    let server = remote::Servers::parse("zecrocks")?; //Servers::pick(&self, network) //Servers.pick(params)?;
+    let s2 = server.pick(params)?;
+    let mut client = s2.connect_direct().await?;
+
+    let chain_tip: u32 = client
+        .get_latest_block(service::ChainSpec::default())
+        .await?
+        .into_inner()
+        .height
+        .try_into()
+        .expect("block heights must fit into u32");
+
+    println!(" chain tip {:?}", chain_tip.to_u32());
+    // let recipients = if tokio::fs::try_exists(&opts.identity).await? {
+
+    // let identity_file_name = String::from("./new_wallet");
+    
+    let mut path = PathBuf::from(wallet_dir.to_owned().unwrap());
+    path.push("wallet");
+    let identity_file_name = path.into_os_string().into_string().unwrap();
+    
+    println!("path {:?}", identity_file_name);
+
+    let recipients: Vec<Box<dyn Recipient + Send>> =
+        if tokio::fs::try_exists(&identity_file_name).await? {
+            age::IdentityFile::from_file(identity_file_name)?.to_recipients()?
+        } else {
+            /// Generate identity
+            let identity = age::x25519::Identity::generate();
+            let recipient = identity.to_public();
+            let path = PathBuf::from(wallet_dir.to_owned().unwrap());
+            // let identity_file_name = String::from("./new_wallet");
+            tokio::fs::create_dir_all(path).await?;
+
+            let mut f = tokio::fs::File::create_new(identity_file_name).await?;
+            f.write_all(
+                format!(
+                    "# created: {}\n",
+                    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                )
+                .as_bytes(),
+            )
+            .await?;
+            f.write_all(format!("# public key: {recipient}\n").as_bytes())
+                .await?;
+            f.write_all(format!("{}\n", identity.to_string().expose_secret()).as_bytes())
+                .await?;
+            f.flush().await?;
+
+            vec![Box::new(recipient) as _]
+        };
+
+    let mnemonic = <Mnemonic<English>>::generate(Count::Words24);
+
+    let birthday = get_wallet_birthday(
+        client,
+        None.unwrap_or(chain_tip.saturating_sub(100)).into(),
+        None,
+    )
+    .await?;
+
+    config::WalletConfig::init_with_mnemonic(
+        wallet_dir.as_ref(),
+        recipients.iter().map(|r| r.as_ref() as _),
+        &mnemonic,
+        birthday.height(),
+        network.into(),
+    )?;
+
+    let seed = {
+        let mut seed = mnemonic.to_seed("");
+        let secret = seed.to_vec();
+        seed.zeroize();
+        SecretVec::new(secret)
+    };
+
+    let wallet_name = "new_wallet";
+
+    init_dbs(
+        params,
+        wallet_dir.as_ref(),
+        wallet_name,
+        &seed,
+        birthday,
+        None,
+    )
+}
+
+async fn get_wallet_birthday(
+    mut client: CompactTxStreamerClient<Channel>,
+    birthday_height: BlockHeight,
+    recover_until: Option<BlockHeight>,
+) -> Result<AccountBirthday, anyhow::Error> {
+    // Fetch the tree state corresponding to the last block prior to the wallet's
+    // birthday height. NOTE: THIS APPROACH LEAKS THE BIRTHDAY TO THE SERVER!
+    let request = service::BlockId {
+        height: u64::from(birthday_height).saturating_sub(1),
+        ..Default::default()
+    };
+    let treestate = client.get_tree_state(request).await?.into_inner();
+    let birthday =
+        AccountBirthday::from_treestate(treestate, recover_until).map_err(error::Error::from)?;
+
+    Ok(birthday)
+}
+
+fn init_dbs(
+    params: impl Parameters + 'static,
+    wallet_dir: Option<&String>,
+    account_name: &str,
+    seed: &SecretVec<u8>,
+    birthday: AccountBirthday,
+    key_source: Option<&str>,
+) -> Result<(), anyhow::Error> {
+    // Initialise the block and wallet DBs.
+    let mut db_data = data::init_dbs(params, wallet_dir)?;
+
+    // Add account.
+    db_data.create_account(account_name, seed, &birthday, key_source)?;
+
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn add_numbers(a: i32, b: i32) -> i32 {
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    let result = rt.block_on(create_wallet());
+
+    if result.is_err() {
+        println!("Failed to create Tokio runtime")
+    }
+
     a + b
 }
