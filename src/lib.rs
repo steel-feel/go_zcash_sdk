@@ -29,7 +29,7 @@ mod remote;
 
 pub async fn create_wallet(wallet_name: String) -> Result<(), anyhow::Error> {
     let wallet_dir = Some(wallet_name.to_owned());
-    let network = consensus::Network::MainNetwork;
+    let network = consensus::Network::TestNetwork;
     let params = consensus::Network::from(network);
 
     let server = remote::Servers::parse("zecrocks")?; //Servers::pick(&self, network) //Servers.pick(params)?;
@@ -115,21 +115,34 @@ pub async fn create_wallet(wallet_name: String) -> Result<(), anyhow::Error> {
     )
 }
 
-pub async fn list_accounts(wallet_name: String) -> Result<(), anyhow::Error> {
+pub struct VAccount {
+    pub uuid: String,
+    pub uivk: String,
+    pub uifk: String,
+    pub source: String,
+}
+
+pub fn list_accounts(wallet_name: String) -> Result<Vec<VAccount>, anyhow::Error> {
     let wallet_dir: Option<String> = Some(wallet_name.to_owned());
-    let params = consensus::Network::MainNetwork;
+    let params = consensus::Network::TestNetwork;
     let (_, db_data) = get_db_paths(wallet_dir.as_ref());
     let db_data = WalletDb::for_path(db_data, params, (), ())?;
 
+    let mut accounts_list: Vec<VAccount> = vec![];
     for account_id in db_data.get_account_ids()?.iter() {
         let account = db_data.get_account(*account_id)?.unwrap();
-        println!("Account {}", account_id.expose_uuid());
-        if let Some(name) = account.name() {
-            println!("Name: {name}");
-        }
+
+        accounts_list.push(VAccount {
+            uuid: account_id.expose_uuid().to_string(),
+            uivk: account.uivk().encode(&params),
+            uifk: account
+                .ufvk()
+                .map_or("None".to_owned(), |k| k.encode(&params)),
+            source: format!("{:?}", account.source()),
+        });
     }
 
-    Ok(())
+    Ok(accounts_list)
 }
 
 async fn get_wallet_birthday(
@@ -167,6 +180,22 @@ fn init_dbs(
     Ok(())
 }
 
+//~~~~~~ C bindings ~~~~~~~~~~~
+
+#[repr(C)]
+pub struct CAccount {
+    uuid: *mut c_char,
+    uivk: *mut c_char,
+    uifk: *mut c_char,
+    source: *mut c_char,
+}
+
+#[repr(C)]
+pub struct CAccountArray {
+    ptr: *mut CAccount,
+    len: usize,
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn go_create_wallet(ptr: *const std::os::raw::c_char) {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
@@ -184,18 +213,57 @@ pub extern "C" fn go_create_wallet(ptr: *const std::os::raw::c_char) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn go_list_accounts(ptr: *const std::os::raw::c_char) {
-      let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-
+pub extern "C" fn go_list_accounts(ptr: *const std::os::raw::c_char) -> CAccountArray {
     unsafe {
         let c_str = std::ffi::CStr::from_ptr(ptr);
         let r_str = c_str.to_str().expect("Invalid Utf-8");
 
-        let result = rt.block_on(list_accounts(r_str.to_string()));
-
+        let result = list_accounts(r_str.to_string());
         if result.is_err() {
-            println!("Failed to list account of wallet")
+            // println!("Failed to list account of wallet");
+            panic!("Failed to list accounts of wallet")
         }
+
+        let mut data: Vec<CAccount> = result
+            .unwrap()
+            .into_iter()
+            .map(|obj| CAccount {
+                uuid: CString::new(obj.uuid).unwrap().into_raw(),
+                uifk: CString::new(obj.uifk).unwrap().into_raw(),
+                uivk: CString::new(obj.uivk).unwrap().into_raw(),
+                source: CString::new(obj.source).unwrap().into_raw(),
+            })
+            .collect();
+
+        let len = data.len();
+        let ptr = data.as_mut_ptr();
+        std::mem::forget(data);
+
+        CAccountArray { ptr, len }
+    }
+}
+
+//~~~~ free memory
+
+#[unsafe(no_mangle)]
+pub extern "C" fn free_struct_array(arr: CAccountArray) {
+    unsafe {
+        let slice = std::slice::from_raw_parts_mut(arr.ptr, arr.len);
+        for item in slice.iter_mut() {
+            if !item.uuid.is_null() {
+                let _ = CString::from_raw(item.uuid);
+            }
+            if !item.uifk.is_null() {
+                let _ = CString::from_raw(item.uifk);
+            }
+            if !item.uivk.is_null() {
+                let _ = CString::from_raw(item.uivk);
+            }
+            if !item.source.is_null() {
+                let _ = CString::from_raw(item.source);
+            }
+        }
+        let _ = Vec::from_raw_parts(arr.ptr, arr.len, arr.len);
     }
 }
 
