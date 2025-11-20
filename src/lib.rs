@@ -21,6 +21,7 @@ use zcash_client_backend::{
 };
 use zcash_protocol::consensus::{self, BlockHeight, Parameters};
 
+use crate::balance::wallet_balance;
 use crate::config::{get_wallet_network, select_account};
 use crate::data::get_db_paths;
 use crate::sync::sync;
@@ -31,6 +32,7 @@ mod data;
 mod error;
 mod remote;
 mod sync;
+mod balance;
 
 pub async fn create_wallet(wallet_name: String) -> Result<(), anyhow::Error> {
     let wallet_dir = Some(wallet_name.to_owned());
@@ -314,6 +316,32 @@ pub unsafe extern "C" fn go_sync(ptr: *const std::os::raw::c_char){
 
         if result.is_err() {
             println!("Failed to sync wallet")
+        }
+    }
+
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn go_balance(
+    ptr: *const std::os::raw::c_char,
+    uuid: *const std::os::raw::c_char,
+) {
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+
+    unsafe {
+        let c_str = std::ffi::CStr::from_ptr(ptr);
+        let r_str = c_str.to_str().expect("Invalid Utf-8");
+
+        let c_uuid = std::ffi::CStr::from_ptr(uuid);
+        let r_uuid = c_uuid.to_str().expect("Invalid Utf-8");
+
+        let account_id = Some(Uuid::from_str(r_uuid).expect("wrong UUid") );
+
+
+        let result = rt.block_on(wallet_balance(r_str.to_string(), account_id ));
+
+        if result.is_err() {
+            println!("Failed to check wallet balance")
         }
     }
 

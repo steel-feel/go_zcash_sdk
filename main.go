@@ -10,6 +10,7 @@ import (
 #include <stdlib.h>
 void go_create_wallet(const char* str);
 void go_sync(const char* str);
+void go_balance(const char* ptr, const char* uuid);
 typedef struct { char* uuid; char* uivk; char* ufvk; char* source; } CAccount;
 typedef struct { CAccount* ptr; size_t len; } CAccountArray;
 CAccountArray go_list_accounts(const char* str);
@@ -59,8 +60,12 @@ func main() {
 */
 
 /// Sync Wallet
+
 C.go_sync(c_wallet_dir)
 
+
+/// Check wallet balance
+C.go_balance(c_wallet_dir,c_uuid );
 	/*
 			/// Get string
 			cStr := C.get_string()
