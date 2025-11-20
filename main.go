@@ -1,7 +1,7 @@
 package main
 
 import (
-	// "fmt"
+	"fmt"
 	"unsafe"
 )
 
@@ -10,11 +10,13 @@ import (
 #include <stdlib.h>
 void go_create_wallet(const char* str);
 void go_sync(const char* str);
-void go_balance(const char* ptr, const char* uuid);
 typedef struct { char* uuid; char* uivk; char* ufvk; char* source; } CAccount;
 typedef struct { CAccount* ptr; size_t len; } CAccountArray;
+typedef struct { char* height ; uint64_t total ; uint64_t orchard ;uint64_t unshielded ; } CBalance;
 CAccountArray go_list_accounts(const char* str);
 char* go_get_address(const char* ptr, const char* uuid);
+CBalance go_balance(const char* ptr, const char* uuid);
+
 void free_struct_array(CAccountArray);
 void free_string(const char* s);
 */
@@ -65,8 +67,15 @@ C.go_sync(c_wallet_dir)
 
 
 /// Check wallet balance
-C.go_balance(c_wallet_dir,c_uuid );
-	/*
+j := C.go_balance(c_wallet_dir,c_uuid );
+defer C.free_string(j.height)
+
+
+fmt.Printf("Height %v \nOrchard %v \nUnsheilded  %v \nTotal %v \n", C.GoString(j.height), uint64(j.orchard),  uint64(j.unshielded) , uint64(j.total));
+	
+
+
+/*
 			/// Get string
 			cStr := C.get_string()
 		    if cStr == nil {

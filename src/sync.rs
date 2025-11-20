@@ -70,7 +70,7 @@ pub async fn sync(wallet_name: String) -> Result<(), anyhow::Error> {
 
     // Refresh UTXOs for the accounts in the wallet.
     for account_id in db_data.get_account_ids()? {
-        println!(
+        info!(
             "Refreshing UTXOs for {:?} from height {}",
             account_id,
             BlockHeight::from(0),
@@ -88,7 +88,6 @@ pub async fn sync(wallet_name: String) -> Result<(), anyhow::Error> {
     // 5) Get the suggested scan ranges from the wallet database
     info!("Fetching scan ranges");
     let mut scan_ranges = db_data.suggest_scan_ranges()?;
-    println!("Fetched {} scan ranges", scan_ranges.len());
 
     // Store the handles to cached block deletions (which we spawn into separate
     // tasks to allow us to continue downloading and scanning other ranges).

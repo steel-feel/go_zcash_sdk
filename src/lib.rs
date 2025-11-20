@@ -27,12 +27,12 @@ use crate::data::get_db_paths;
 use crate::sync::sync;
 // use crate::{config::WalletConfig, remote::Servers};
 
+mod balance;
 mod config;
 mod data;
 mod error;
 mod remote;
 mod sync;
-mod balance;
 
 pub async fn create_wallet(wallet_name: String) -> Result<(), anyhow::Error> {
     let wallet_dir = Some(wallet_name.to_owned());
@@ -145,13 +145,17 @@ pub fn get_address(wallet_name: String, uuid: String) -> Result<String, anyhow::
         .uivk()
         .default_address(UnifiedAddressRequest::AllAvailableKeys)?;
 
-   println!("t-address {}", ua.transparent().unwrap().to_zcash_address(params.network_type())    );
-   println!("z-address {:?}", ua.orchard().unwrap());
+    println!(
+        "t-address {}",
+        ua.transparent()
+            .unwrap()
+            .to_zcash_address(params.network_type())
+    );
+    println!("z-address {:?}", ua.orchard().unwrap());
 
     /// Note: below gives same thing
     // ua.to_zcash_address(params.network_type()).to_string();
-
-    Ok( ua.encode(&params))
+    Ok(ua.encode(&params))
 }
 
 pub fn list_accounts(wallet_name: String) -> Result<Vec<VAccount>, anyhow::Error> {
@@ -165,16 +169,21 @@ pub fn list_accounts(wallet_name: String) -> Result<Vec<VAccount>, anyhow::Error
     for account_id in db_data.get_account_ids()?.iter() {
         let account = db_data.get_account(*account_id)?.unwrap();
 
-
-       
-
         accounts_list.push(VAccount {
             uuid: account_id.expose_uuid().to_string(),
             uivk: account.uivk().encode(&params),
             ufvk: account
                 .ufvk()
                 .map_or("None".to_owned(), |k| k.encode(&params)),
-            source: format!("{:?}",  account.source().key_derivation().unwrap().seed_fingerprint().to_string() ),
+            source: format!(
+                "{:?}",
+                account
+                    .source()
+                    .key_derivation()
+                    .unwrap()
+                    .seed_fingerprint()
+                    .to_string()
+            ),
         });
     }
 
@@ -230,6 +239,14 @@ pub struct CAccount {
 pub struct CAccountArray {
     ptr: *mut CAccount,
     len: usize,
+}
+
+#[repr(C)]
+pub struct CBalance {
+    height: *mut c_char,
+    total: u64,
+    orchard: u64,
+    unshielded: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -303,10 +320,9 @@ pub unsafe extern "C" fn go_get_address(
     }
 }
 
-
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn go_sync(ptr: *const std::os::raw::c_char){
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+pub unsafe extern "C" fn go_sync(ptr: *const std::os::raw::c_char) {
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
     unsafe {
         let c_str = std::ffi::CStr::from_ptr(ptr);
@@ -318,16 +334,14 @@ pub unsafe extern "C" fn go_sync(ptr: *const std::os::raw::c_char){
             println!("Failed to sync wallet")
         }
     }
-
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn go_balance(
     ptr: *const std::os::raw::c_char,
     uuid: *const std::os::raw::c_char,
-) {
+) -> CBalance {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-
     unsafe {
         let c_str = std::ffi::CStr::from_ptr(ptr);
         let r_str = c_str.to_str().expect("Invalid Utf-8");
@@ -335,16 +349,30 @@ pub unsafe extern "C" fn go_balance(
         let c_uuid = std::ffi::CStr::from_ptr(uuid);
         let r_uuid = c_uuid.to_str().expect("Invalid Utf-8");
 
-        let account_id = Some(Uuid::from_str(r_uuid).expect("wrong UUid") );
+        let account_id = Some(Uuid::from_str(r_uuid).expect("wrong UUid"));
 
-
-        let result = rt.block_on(wallet_balance(r_str.to_string(), account_id ));
+        let result = rt.block_on(wallet_balance(r_str.to_string(), account_id));
 
         if result.is_err() {
-            println!("Failed to check wallet balance")
+            println!("Failed to check wallet balance");
+            return CBalance {
+                height: CString::new("").unwrap().into_raw(),
+                total: 0,
+                orchard: 0,
+                unshielded: 0,
+            };
         }
+
+        let balance = result.unwrap();
+        return CBalance {
+            height: CString::new(balance.height).unwrap().into_raw(),
+            total: balance.total,
+            orchard: balance.orchard,
+            unshielded: balance.unshielded,
+        };
     }
 
+  
 }
 
 //~~~~ free memory
