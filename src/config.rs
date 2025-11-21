@@ -5,7 +5,7 @@ use zcash_client_backend::data_api::WalletRead;
 use zcash_client_sqlite::AccountUuid;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretVec, Zeroize};
 use serde::{Deserialize, Serialize};
@@ -244,3 +244,8 @@ where
         .ok_or(anyhow!("Account missing: {:?}", account_id))
 }
 
+pub(crate) fn get_identity_file(wallet_dir: &str) -> String {
+    let mut path: PathBuf = PathBuf::from(wallet_dir.to_owned());
+    path.push("wallet");
+    return path.into_os_string().into_string().expect("Identity file parse issue");
+}

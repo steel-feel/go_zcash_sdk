@@ -1,20 +1,18 @@
 use age::{Recipient, secrecy::ExposeSecret};
 use bip0039::{Count, English, Mnemonic};
 use rust_decimal::prelude::ToPrimitive;
-use secrecy::{ExposeSecret as _, SecretString, SecretVec, Zeroize};
-use std::path::{Path, PathBuf};
+use secrecy::{SecretVec, Zeroize};
+use std::path::{PathBuf};
 use tokio::io::AsyncWriteExt;
 use tonic::transport::Channel;
 use uuid::Uuid;
 use zcash_client_sqlite::WalletDb;
 use zcash_keys::keys::UnifiedAddressRequest;
 
-use std::os::raw::c_uchar;
 use std::str::{self, FromStr};
-use std::{os, slice};
 
 use libc::c_char;
-use std::ffi::{CStr, CString};
+use std::ffi::{ CString};
 use zcash_client_backend::{
     data_api::{Account, AccountBirthday, WalletRead, WalletWrite},
     proto::service::{self, compact_tx_streamer_client::CompactTxStreamerClient},
@@ -24,6 +22,7 @@ use zcash_protocol::consensus::{self, BlockHeight, Parameters};
 use crate::balance::wallet_balance;
 use crate::config::{get_wallet_network, select_account};
 use crate::data::get_db_paths;
+use crate::send::send_txn;
 use crate::sync::sync;
 // use crate::{config::WalletConfig, remote::Servers};
 
@@ -32,6 +31,7 @@ mod config;
 mod data;
 mod error;
 mod remote;
+mod send;
 mod sync;
 
 pub async fn create_wallet(wallet_name: String) -> Result<(), anyhow::Error> {
@@ -53,9 +53,12 @@ pub async fn create_wallet(wallet_name: String) -> Result<(), anyhow::Error> {
 
     println!(" Blocknumber {:?}", chain_tip.to_u32());
 
-    let mut path = PathBuf::from(wallet_dir.to_owned().unwrap());
+    let mut path = PathBuf::from(wallet_dir.to_owned().expect("identity path issue"));
     path.push("wallet");
-    let identity_file_name = path.into_os_string().into_string().unwrap();
+    let identity_file_name = path
+        .into_os_string()
+        .into_string()
+        .expect("Identity file parse issue");
 
     let recipients: Vec<Box<dyn Recipient + Send>> =
         if tokio::fs::try_exists(&identity_file_name).await? {
@@ -371,10 +374,77 @@ pub unsafe extern "C" fn go_balance(
             unshielded: balance.unshielded,
         };
     }
-
-  
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn go_send_txn(
+    wallet_name: *const std::os::raw::c_char,
+    uuid: *const std::os::raw::c_char,
+    address: *const std::os::raw::c_char,
+    value: u64,
+    target_note_count: usize,
+    min_split_output_value: u64,
+    memo: *const std::os::raw::c_char,
+) -> *mut c_char {
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    unsafe {
+        let c_str = std::ffi::CStr::from_ptr(wallet_name);
+        let w_str = c_str.to_str().expect("Invalid Utf-8");
+
+        let c_uuid = std::ffi::CStr::from_ptr(uuid);
+        let r_uuid = c_uuid.to_str().expect("Invalid Utf-8");
+
+        let c_address = std::ffi::CStr::from_ptr(address);
+        let r_address = c_address.to_str().expect("Invalid Address");
+
+        let account_id = Some(Uuid::from_str(r_uuid).expect("wrong UUid"));
+
+        let c_memo = std::ffi::CStr::from_ptr(memo);
+        let r_memo = c_memo
+            .to_str()
+            .map(|m| {
+                if m.is_empty() {
+                    None
+                } else {
+                    Some(m.to_owned())
+                }
+            })
+            .expect("Invalid memo");
+
+        let r_target_note_count = if target_note_count == 0 {
+            None
+        } else {
+            Some(target_note_count)
+        };
+
+        let r_min_split_output_value = if min_split_output_value == 0 {
+            None
+        } else {
+            Some(min_split_output_value)
+        };
+
+        let result = rt.block_on(send_txn(
+            w_str.to_string(),
+            account_id,
+            r_target_note_count,
+            r_min_split_output_value,
+            r_address.to_owned(),
+            value,
+            r_memo,
+        ));
+
+        match result {
+            Ok(txn) => match CString::new(txn) {
+                Ok(s) => s.into_raw(),
+                Err(_) => return std::ptr::null_mut(),
+            },
+            Err(e) => {
+                println!("Failed to send txn {:?}", e);
+                return std::ptr::null_mut();
+            }
+        }
+    }
+}
 //~~~~ free memory
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_string(s: *mut c_char) {

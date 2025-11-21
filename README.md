@@ -12,7 +12,6 @@ cargo build --release
 go run .
 ```
 
-3549
+### Notes
 
-354939
-3685675
+- Need to sync and then send the transaction
